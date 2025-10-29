@@ -74,10 +74,17 @@ impl ShellExecutor {
             })
             .context("Failed to create PTY")?;
 
-        // Create command
+        // Create command that sources .bashrc first
         let mut cmd = CommandBuilder::new(&shell_path);
         cmd.arg("-c");
-        cmd.arg(&command);
+        
+        // Source .bashrc (if it exists) before executing the command
+        // Use login shell behavior to pick up environment
+        let full_command = format!(
+            "[ -f ~/.bashrc ] && source ~/.bashrc; {}",
+            command
+        );
+        cmd.arg(&full_command);
         cmd.cwd(&working_dir);
 
         // Spawn the child process

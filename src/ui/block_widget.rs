@@ -94,6 +94,7 @@ impl<'a> BlockWidget<'a> {
                     ui.separator();
                     
                     egui::ScrollArea::vertical()
+                        .id_source(format!("block_output_{}", self.block.id))
                         .max_height(400.0)
                         .show(ui, |ui| {
                             ui.add(

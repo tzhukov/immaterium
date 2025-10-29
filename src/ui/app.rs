@@ -241,48 +241,28 @@ impl eframe::App for ImmateriumApp {
             ui.heading("🚀 Immaterium Terminal");
             ui.separator();
             
-            // Command input area
-            ui.horizontal(|ui| {
-                ui.label("$");
-                let response = ui.add(
-                    egui::TextEdit::singleline(&mut self.command_input)
-                        .desired_width(f32::INFINITY)
-                        .hint_text("Enter a command...")
-                        .font(egui::TextStyle::Monospace),
-                );
-                
-                if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                    self.execute_command(ctx);
-                    response.request_focus();
-                }
-                
-                if self.current_block_id.is_some() {
-                    ui.spinner();
-                    ui.label("Running...");
-                }
-            });
+            // Blocks area (takes remaining space)
+            let input_height = 60.0; // Reserve space for command input
+            let available_height = ui.available_height() - input_height;
             
-            ui.separator();
-            
-            // Blocks area
             ScrollArea::vertical()
+                .id_source("blocks_scroll_area")
                 .auto_shrink([false; 2])
                 .stick_to_bottom(true)
+                .max_height(available_height)
                 .show(ui, |ui| {
-                    ui.set_min_height(400.0);
-                    
                     if self.block_manager.count() == 0 {
                         ui.vertical_centered(|ui| {
                             ui.add_space(50.0);
                             ui.label("✨ Ready to execute commands!");
                             ui.add_space(20.0);
-                            ui.label("Type a command above and press Enter");
+                            ui.label("Type a command below and press Enter");
                             ui.add_space(10.0);
                             ui.label(format!("Working directory: {}", 
                                 self.session.working_directory.display()));
                         });
                     } else {
-                        // Display all blocks
+                        // Display all blocks (newest at bottom)
                         let blocks_to_display: Vec<_> = self.block_manager.get_blocks()
                             .iter()
                             .map(|b| b.clone())
@@ -308,6 +288,29 @@ impl eframe::App for ImmateriumApp {
                         }
                     }
                 });
+            
+            ui.separator();
+            
+            // Command input area at the bottom
+            ui.horizontal(|ui| {
+                ui.label("$");
+                let response = ui.add(
+                    egui::TextEdit::singleline(&mut self.command_input)
+                        .desired_width(f32::INFINITY)
+                        .hint_text("Enter a command...")
+                        .font(egui::TextStyle::Monospace),
+                );
+                
+                if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                    self.execute_command(ctx);
+                    response.request_focus();
+                }
+                
+                if self.current_block_id.is_some() {
+                    ui.spinner();
+                    ui.label("Running...");
+                }
+            });
             
             // Context menu
             if let Some(block_id) = self.context_menu_block {
