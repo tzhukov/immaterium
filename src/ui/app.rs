@@ -1,9 +1,10 @@
 use crate::config::Config;
-use crate::core::{Block, BlockManager, Session};
+use crate::core::{Block, BlockManager, Database, Session, SessionManager};
 use crate::shell::{OutputLine, ShellExecutor};
 use crate::ui::BlockWidget;
 use egui::{CentralPanel, Context, ScrollArea, TopBottomPanel, ViewportCommand};
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
@@ -13,9 +14,12 @@ pub struct ImmateriumApp {
     session: Session,
     block_manager: BlockManager,
     runtime: tokio::runtime::Runtime,
+    session_manager: Option<SessionManager>,
     current_block_id: Option<Uuid>,
     output_receiver: Option<mpsc::UnboundedReceiver<OutputMessage>>,
     context_menu_block: Option<Uuid>,
+    last_save: Instant,
+    save_needed: bool,
 }
 
 impl ImmateriumApp {
@@ -32,20 +36,72 @@ impl ImmateriumApp {
         cc.egui_ctx.set_style(style);
 
         let working_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
-        let session = Session::new("default".to_string(), working_dir.clone());
+        let mut session = Session::new("default".to_string(), working_dir.clone());
         
         let runtime = tokio::runtime::Runtime::new()
             .expect("Failed to create tokio runtime");
+
+        // Initialize database and session manager
+        let session_manager = runtime.block_on(async {
+            let db_path = PathBuf::from("immaterium.db");
+            match Database::new(db_path).await {
+                Ok(db) => {
+                    tracing::info!("Database initialized successfully");
+                    
+                    match SessionManager::new(db).await {
+                        Ok(sm) => {
+                            // Try to load active session
+                            match sm.get_active_session().await {
+                                Ok(Some(loaded_session)) => {
+                                    tracing::info!("Loaded active session: {}", loaded_session.name);
+                                    session = loaded_session;
+                                }
+                                Ok(None) => {
+                                    tracing::info!("No active session found, creating new one");
+                                    // Create new session in database
+                                    if let Err(e) = sm.create_session(&session).await {
+                                        tracing::error!("Failed to create session: {}", e);
+                                    } else if let Err(e) = sm.set_active_session(&session.id).await {
+                                        tracing::error!("Failed to set active session: {}", e);
+                                    }
+                                }
+                                Err(e) => {
+                                    tracing::error!("Failed to load active session: {}", e);
+                                }
+                            }
+                            Some(sm)
+                        }
+                        Err(e) => {
+                            tracing::error!("Failed to create SessionManager: {}", e);
+                            None
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::error!("Failed to initialize database: {}", e);
+                    None
+                }
+            }
+        });
+
+        // Populate block manager with loaded blocks
+        let mut block_manager = BlockManager::new();
+        for block in &session.blocks {
+            block_manager.add_block(block.clone());
+        }
 
         Self {
             config,
             command_input: String::new(),
             session,
-            block_manager: BlockManager::new(),
+            block_manager,
             runtime,
+            session_manager,
             current_block_id: None,
             output_receiver: None,
             context_menu_block: None,
+            last_save: Instant::now(),
+            save_needed: false,
         }
     }
 
@@ -71,6 +127,7 @@ impl ImmateriumApp {
         let block_id = block.id;
         self.block_manager.add_block(block);
         self.current_block_id = Some(block_id);
+        self.save_needed = true; // Mark that we need to save
 
         let (output_tx, output_rx) = mpsc::unbounded_channel();
         self.output_receiver = Some(output_rx);
@@ -108,6 +165,39 @@ impl ImmateriumApp {
             }
         });
     }
+
+    fn auto_save(&mut self) {
+        // Check if enough time has elapsed since last save
+        let save_interval = Duration::from_secs(self.config.general.auto_save_interval);
+        if self.last_save.elapsed() < save_interval || !self.save_needed {
+            return;
+        }
+
+        if let Some(ref session_manager) = self.session_manager {
+            let session_id = self.session.id;
+            let blocks: Vec<_> = self.block_manager.get_blocks().iter().cloned().collect();
+            
+            let session_manager = session_manager.clone();
+            self.runtime.spawn(async move {
+                // Save all blocks
+                for (index, block) in blocks.iter().enumerate() {
+                    if let Err(e) = session_manager.save_block(&session_id, block, index as i32).await {
+                        tracing::error!("Failed to save block: {}", e);
+                    }
+                }
+                
+                // Update session timestamp
+                if let Err(e) = session_manager.touch_session(&session_id).await {
+                    tracing::error!("Failed to update session timestamp: {}", e);
+                } else {
+                    tracing::debug!("Auto-saved session {}", session_id);
+                }
+            });
+            
+            self.last_save = Instant::now();
+            self.save_needed = false;
+        }
+    }
 }
 
 enum OutputMessage {
@@ -117,6 +207,9 @@ enum OutputMessage {
 
 impl eframe::App for ImmateriumApp {
     fn update(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
+        // Auto-save session periodically
+        self.auto_save();
+        
         // Poll output receiver for new output
         let mut should_clear_receiver = false;
         if let Some(rx) = &mut self.output_receiver {
@@ -126,6 +219,7 @@ impl eframe::App for ImmateriumApp {
                         if let Some(block_id) = self.current_block_id {
                             if let Some(block) = self.block_manager.get_block_mut(&block_id) {
                                 block.append_output(text);
+                                self.save_needed = true; // Mark for save when output changes
                             }
                         }
                     }
@@ -133,6 +227,7 @@ impl eframe::App for ImmateriumApp {
                         if let Some(block_id) = self.current_block_id {
                             if let Some(block) = self.block_manager.get_block_mut(&block_id) {
                                 block.complete_execution(code);
+                                self.save_needed = true; // Save when command completes
                             }
                         }
                         self.current_block_id = None;
