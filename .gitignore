@@ -1,0 +1,32 @@
+/target/
+/Cargo.lock
+**/*.rs.bk
+*.pdb
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Database
+*.db
+*.db-shm
+*.db-wal
+
+# Logs
+*.log
+
+# Environment
+.env
+.env.local
+
+# Session data
+sessions/
+*.session
+
+# Temporary files
+tmp/
+temp/
