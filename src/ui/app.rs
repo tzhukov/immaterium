@@ -1,5 +1,5 @@
 use crate::config::Config;
-use crate::core::{Block, BlockManager, Database, Session, SessionManager};
+use crate::core::{Block, BlockManager, Database, ExportedSession, Session, SessionManager};
 use crate::shell::{OutputLine, ShellExecutor};
 use crate::ui::BlockWidget;
 use egui::{CentralPanel, Context, ScrollArea, TopBottomPanel, ViewportCommand};
@@ -20,6 +20,12 @@ pub struct ImmateriumApp {
     context_menu_block: Option<Uuid>,
     last_save: Instant,
     save_needed: bool,
+    // Session UI state
+    show_session_list: bool,
+    show_new_session_dialog: bool,
+    new_session_name: String,
+    available_sessions: Vec<crate::core::SessionInfo>,
+    show_export_dialog: bool,
 }
 
 impl ImmateriumApp {
@@ -102,6 +108,11 @@ impl ImmateriumApp {
             context_menu_block: None,
             last_save: Instant::now(),
             save_needed: false,
+            show_session_list: false,
+            show_new_session_dialog: false,
+            new_session_name: String::new(),
+            available_sessions: Vec::new(),
+            show_export_dialog: false,
         }
     }
 
@@ -198,6 +209,73 @@ impl ImmateriumApp {
             self.save_needed = false;
         }
     }
+
+    fn load_available_sessions(&mut self) {
+        if let Some(ref session_manager) = self.session_manager {
+            let session_manager = session_manager.clone();
+            let runtime = &self.runtime;
+            
+            if let Ok(sessions) = runtime.block_on(async {
+                session_manager.list_sessions().await
+            }) {
+                self.available_sessions = sessions;
+            }
+        }
+    }
+
+    fn switch_to_session(&mut self, session_id: Uuid) {
+        if let Some(ref session_manager) = self.session_manager {
+            let session_manager = session_manager.clone();
+            
+            match self.runtime.block_on(async {
+                session_manager.load_session(&session_id).await
+            }) {
+                Ok(loaded_session) => {
+                    // Save current session first
+                    self.auto_save();
+                    
+                    // Switch to new session
+                    self.session = loaded_session;
+                    self.block_manager = BlockManager::new();
+                    for block in &self.session.blocks {
+                        self.block_manager.add_block(block.clone());
+                    }
+                    
+                    // Set as active
+                    let _ = self.runtime.block_on(async {
+                        session_manager.set_active_session(&session_id).await
+                    });
+                    
+                    tracing::info!("Switched to session: {}", self.session.name);
+                }
+                Err(e) => {
+                    tracing::error!("Failed to load session: {}", e);
+                }
+            }
+        }
+    }
+
+    fn create_new_session(&mut self, name: String) {
+        let working_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
+        let new_session = Session::new(name, working_dir);
+        
+        if let Some(ref session_manager) = self.session_manager {
+            let session_manager = session_manager.clone();
+            let session_clone = new_session.clone();
+            
+            match self.runtime.block_on(async {
+                session_manager.create_session(&session_clone).await
+            }) {
+                Ok(_) => {
+                    // Switch to the new session
+                    self.switch_to_session(new_session.id);
+                }
+                Err(e) => {
+                    tracing::error!("Failed to create session: {}", e);
+                }
+            }
+        }
+    }
 }
 
 enum OutputMessage {
@@ -245,15 +323,22 @@ impl eframe::App for ImmateriumApp {
             egui::menu::bar(ui, |ui| {
                 ui.menu_button("File", |ui| {
                     if ui.button("New Session").clicked() {
-                        tracing::info!("New session clicked");
+                        self.show_new_session_dialog = true;
                         ui.close_menu();
                     }
                     if ui.button("Open Session...").clicked() {
-                        tracing::info!("Open session clicked");
+                        self.load_available_sessions();
+                        self.show_session_list = true;
                         ui.close_menu();
                     }
                     if ui.button("Save Session").clicked() {
-                        tracing::info!("Save session clicked");
+                        self.save_needed = true;
+                        self.auto_save();
+                        ui.close_menu();
+                    }
+                    ui.separator();
+                    if ui.button("Export...").clicked() {
+                        self.show_export_dialog = true;
                         ui.close_menu();
                     }
                     ui.separator();
@@ -460,12 +545,150 @@ impl eframe::App for ImmateriumApp {
         // Status bar
         TopBottomPanel::bottom("status_bar").show(ctx, |ui| {
             ui.horizontal(|ui| {
-                ui.label("Ready");
+                ui.label(format!("Session: {}", self.session.name));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.label(format!("v{}", env!("CARGO_PKG_VERSION")));
+                    ui.separator();
+                    ui.label(format!("{} blocks", self.block_manager.count()));
                 });
             });
         });
+
+        // Session list dialog
+        if self.show_session_list {
+            egui::Window::new("📂 Open Session")
+                .collapsible(false)
+                .resizable(true)
+                .default_width(500.0)
+                .show(ctx, |ui| {
+                    ui.label("Select a session to open:");
+                    ui.separator();
+                    
+                    ScrollArea::vertical()
+                        .max_height(300.0)
+                        .show(ui, |ui| {
+                            for session_info in &self.available_sessions.clone() {
+                                ui.horizontal(|ui| {
+                                    let is_current = session_info.id == self.session.id;
+                                    let label = if is_current {
+                                        format!("▶ {} (current)", session_info.name)
+                                    } else if session_info.is_active {
+                                        format!("● {}", session_info.name)
+                                    } else {
+                                        session_info.name.clone()
+                                    };
+                                    
+                                    if ui.selectable_label(is_current, label).clicked() && !is_current {
+                                        self.switch_to_session(session_info.id);
+                                        self.show_session_list = false;
+                                    }
+                                    
+                                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                        ui.label(format!("Updated: {}", 
+                                            session_info.updated_at.format("%Y-%m-%d %H:%M")));
+                                    });
+                                });
+                                ui.separator();
+                            }
+                        });
+                    
+                    ui.separator();
+                    if ui.button("❌ Close").clicked() {
+                        self.show_session_list = false;
+                    }
+                });
+        }
+
+        // New session dialog
+        if self.show_new_session_dialog {
+            egui::Window::new("✨ New Session")
+                .collapsible(false)
+                .resizable(false)
+                .show(ctx, |ui| {
+                    ui.label("Enter a name for the new session:");
+                    
+                    let response = ui.add(
+                        egui::TextEdit::singleline(&mut self.new_session_name)
+                            .hint_text("Session name...")
+                            .desired_width(300.0)
+                    );
+                    
+                    if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                        if !self.new_session_name.trim().is_empty() {
+                            let name = self.new_session_name.trim().to_string();
+                            self.create_new_session(name);
+                            self.new_session_name.clear();
+                            self.show_new_session_dialog = false;
+                        }
+                    }
+                    
+                    ui.separator();
+                    ui.horizontal(|ui| {
+                        if ui.button("✅ Create").clicked() {
+                            if !self.new_session_name.trim().is_empty() {
+                                let name = self.new_session_name.trim().to_string();
+                                self.create_new_session(name);
+                                self.new_session_name.clear();
+                                self.show_new_session_dialog = false;
+                            }
+                        }
+                        
+                        if ui.button("❌ Cancel").clicked() {
+                            self.new_session_name.clear();
+                            self.show_new_session_dialog = false;
+                        }
+                    });
+                });
+        }
+
+        // Export dialog
+        if self.show_export_dialog {
+            egui::Window::new("📤 Export Session")
+                .collapsible(false)
+                .resizable(false)
+                .show(ctx, |ui| {
+                    ui.label(format!("Export session: {}", self.session.name));
+                    ui.separator();
+                    
+                    ui.label("Choose export format:");
+                    ui.add_space(10.0);
+                    
+                    if ui.button("📄 Export as JSON").clicked() {
+                        let filename = format!("{}.json", self.session.name.replace(' ', "_"));
+                        let exported = ExportedSession::new(self.session.clone());
+                        match exported.to_json_file(&filename) {
+                            Ok(_) => tracing::info!("Exported session to {}", filename),
+                            Err(e) => tracing::error!("Failed to export: {}", e),
+                        }
+                        self.show_export_dialog = false;
+                    }
+                    
+                    if ui.button("📝 Export as Markdown").clicked() {
+                        let filename = format!("{}.md", self.session.name.replace(' ', "_"));
+                        let exported = ExportedSession::new(self.session.clone());
+                        match exported.to_markdown_file(&filename) {
+                            Ok(_) => tracing::info!("Exported session to {}", filename),
+                            Err(e) => tracing::error!("Failed to export: {}", e),
+                        }
+                        self.show_export_dialog = false;
+                    }
+                    
+                    if ui.button("📋 Export as Text").clicked() {
+                        let filename = format!("{}.txt", self.session.name.replace(' ', "_"));
+                        let exported = ExportedSession::new(self.session.clone());
+                        match exported.to_text_file(&filename) {
+                            Ok(_) => tracing::info!("Exported session to {}", filename),
+                            Err(e) => tracing::error!("Failed to export: {}", e),
+                        }
+                        self.show_export_dialog = false;
+                    }
+                    
+                    ui.separator();
+                    if ui.button("❌ Cancel").clicked() {
+                        self.show_export_dialog = false;
+                    }
+                });
+        }
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
