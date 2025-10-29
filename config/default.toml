@@ -1,0 +1,55 @@
+[general]
+default_shell = "/bin/bash"
+save_history = true
+max_history_size = 10000
+auto_save_interval = 30
+
+[appearance]
+theme = "dark"
+font_family = "monospace"
+font_size = 14.0
+show_line_numbers = true
+block_spacing = 8.0
+
+[ai]
+default_provider = "ollama"
+enable_suggestions = true
+
+[ai.providers.ollama]
+base_url = "http://localhost:11434"
+model = "codellama"
+enabled = true
+
+[ai.providers.openai]
+api_key = "${OPENAI_API_KEY}"
+model = "gpt-4"
+enabled = false
+
+[ai.providers.groq]
+base_url = "https://api.groq.com/openai/v1"
+api_key = "${GROQ_API_KEY}"
+model = "mixtral-8x7b-32768"
+enabled = false
+
+[mcp]
+servers = []
+
+# Example MCP server configuration:
+# [[mcp.servers]]
+# name = "filesystem"
+# command = "mcp-server-filesystem"
+# args = ["/home/user"]
+# auto_start = true
+# 
+# [mcp.servers.env]
+# # Environment variables for the server
+
+[keybindings]
+new_block = "Ctrl+Enter"
+ai_suggest = "Ctrl+Space"
+search = "Ctrl+F"
+history = "Ctrl+R"
+split_horizontal = "Ctrl+Shift+H"
+split_vertical = "Ctrl+Shift+V"
+close_pane = "Ctrl+Shift+W"
+settings = "Ctrl+,"

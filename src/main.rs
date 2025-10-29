@@ -24,7 +24,7 @@ fn main() -> Result<()> {
             .with_inner_size([1200.0, 800.0])
             .with_min_inner_size([800.0, 600.0])
             .with_icon(
-                eframe::icon_data::from_png_bytes(&include_bytes!("../assets/icon.png"))
+                eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon.png"))
                     .unwrap_or_default(),
             ),
         persist_window: true,
