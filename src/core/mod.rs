@@ -1,8 +1,10 @@
 // Core data structures module
-// Will contain Block, Session, and History implementations
+// Contains Block, Session, and BlockManager implementations
 
 pub mod block;
 pub mod session;
+pub mod manager;
 
-pub use block::Block;
+pub use block::{Block, BlockState, BlockMetadata};
 pub use session::Session;
+pub use manager::BlockManager;

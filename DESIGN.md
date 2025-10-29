@@ -313,17 +313,22 @@ search = "Ctrl+F"
 
 ### 4.2 Command Completion & Suggestions
 
+**Important Note:** The terminal must maintain full bash shell capabilities including native bash autocomplete, tab completion, history navigation (up/down arrows), and all standard bash features.
+
 **Sources:**
-- Shell builtin completion (bash completion)
-- Command history
+- Native bash completion (programmable completion, tab completion)
+- Shell builtin completion (commands, files, paths)
+- Command history with fuzzy search
 - AI-powered suggestions based on context
 - MCP server suggestions
 
 **Implementation:**
-- Parse partial input
+- Parse partial input and trigger bash completion
 - Query multiple sources in parallel
 - Rank and deduplicate suggestions
 - Display in popup with preview
+- Support tab completion for file paths, commands, and arguments
+- Maintain bash readline-like behavior
 
 ---
 
