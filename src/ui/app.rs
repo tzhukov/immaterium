@@ -1,6 +1,7 @@
 use crate::config::Config;
 use crate::core::{Block, BlockManager, Database, ExportedSession, Session, SessionManager};
 use crate::shell::{OutputLine, ShellExecutor};
+use crate::theme::ThemeLoader;
 use crate::ui::BlockWidget;
 use egui::{CentralPanel, Context, ScrollArea, TopBottomPanel, ViewportCommand};
 use std::path::PathBuf;
@@ -26,10 +27,27 @@ pub struct ImmateriumApp {
     new_session_name: String,
     available_sessions: Vec<crate::core::SessionInfo>,
     show_export_dialog: bool,
+    // Theme
+    theme_loader: ThemeLoader,
+    show_theme_selector: bool,
 }
 
 impl ImmateriumApp {
     pub fn new(cc: &eframe::CreationContext<'_>, config: Config) -> Self {
+        // Initialize theme loader
+        let mut theme_loader = ThemeLoader::new();
+        
+        // Try to load custom themes from config directory
+        if let Some(config_dir) = directories::ProjectDirs::from("com", "immaterium", "immaterium") {
+            let themes_dir = config_dir.config_dir().join("themes");
+            if let Err(e) = theme_loader.load_from_directory(&themes_dir) {
+                tracing::warn!("Failed to load custom themes: {}", e);
+            }
+        }
+        
+        // Apply theme to egui context
+        theme_loader.apply_to_egui(&cc.egui_ctx);
+        
         // Customize egui style
         let mut style = (*cc.egui_ctx.style()).clone();
         
@@ -113,6 +131,8 @@ impl ImmateriumApp {
             new_session_name: String::new(),
             available_sessions: Vec::new(),
             show_export_dialog: false,
+            theme_loader,
+            show_theme_selector: false,
         }
     }
 
@@ -362,6 +382,11 @@ impl eframe::App for ImmateriumApp {
                 });
 
                 ui.menu_button("View", |ui| {
+                    if ui.button("🎨 Change Theme...").clicked() {
+                        self.show_theme_selector = true;
+                        ui.close_menu();
+                    }
+                    ui.separator();
                     if ui.button("Split Horizontal").clicked() {
                         tracing::info!("Split horizontal clicked");
                         ui.close_menu();
@@ -686,6 +711,38 @@ impl eframe::App for ImmateriumApp {
                     ui.separator();
                     if ui.button("❌ Cancel").clicked() {
                         self.show_export_dialog = false;
+                    }
+                });
+        }
+
+        // Theme selector dialog
+        if self.show_theme_selector {
+            egui::Window::new("🎨 Select Theme")
+                .collapsible(false)
+                .resizable(false)
+                .show(ctx, |ui| {
+                    ui.label("Choose a theme:");
+                    ui.separator();
+                    
+                    let current_theme = self.theme_loader.current().name.clone();
+                    let themes = self.theme_loader.available_themes();
+                    
+                    for theme_name in themes {
+                        let is_current = theme_name == current_theme;
+                        if ui.selectable_label(is_current, &theme_name).clicked() {
+                            if let Err(e) = self.theme_loader.set_theme(&theme_name) {
+                                tracing::error!("Failed to switch theme: {}", e);
+                            } else {
+                                self.theme_loader.apply_to_egui(ctx);
+                                tracing::info!("Switched to theme: {}", theme_name);
+                            }
+                            self.show_theme_selector = false;
+                        }
+                    }
+                    
+                    ui.separator();
+                    if ui.button("❌ Close").clicked() {
+                        self.show_theme_selector = false;
                     }
                 });
         }

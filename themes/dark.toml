@@ -1,0 +1,240 @@
+name = "Dark"
+
+[colors.background]
+r = 30
+g = 30
+b = 46
+a = 255
+
+[colors.background_secondary]
+r = 36
+g = 36
+b = 59
+a = 255
+
+[colors.background_tertiary]
+r = 49
+g = 50
+b = 68
+a = 255
+
+[colors.text_primary]
+r = 205
+g = 214
+b = 244
+a = 255
+
+[colors.text_secondary]
+r = 166
+g = 173
+b = 200
+a = 255
+
+[colors.text_disabled]
+r = 108
+g = 112
+b = 134
+a = 255
+
+[colors.border]
+r = 69
+g = 71
+b = 90
+a = 255
+
+[colors.selection]
+r = 137
+g = 180
+b = 250
+a = 50
+
+[colors.cursor]
+r = 245
+g = 194
+b = 231
+a = 255
+
+[colors.highlight]
+r = 250
+g = 179
+b = 135
+a = 30
+
+[colors.block_running]
+r = 137
+g = 180
+b = 250
+a = 255
+
+[colors.block_success]
+r = 166
+g = 227
+b = 161
+a = 255
+
+[colors.block_error]
+r = 243
+g = 139
+b = 168
+a = 255
+
+[colors.block_editing]
+r = 249
+g = 226
+b = 175
+a = 255
+
+[colors.ansi_black]
+r = 69
+g = 71
+b = 90
+a = 255
+
+[colors.ansi_red]
+r = 243
+g = 139
+b = 168
+a = 255
+
+[colors.ansi_green]
+r = 166
+g = 227
+b = 161
+a = 255
+
+[colors.ansi_yellow]
+r = 249
+g = 226
+b = 175
+a = 255
+
+[colors.ansi_blue]
+r = 137
+g = 180
+b = 250
+a = 255
+
+[colors.ansi_magenta]
+r = 245
+g = 194
+b = 231
+a = 255
+
+[colors.ansi_cyan]
+r = 148
+g = 226
+b = 213
+a = 255
+
+[colors.ansi_white]
+r = 205
+g = 214
+b = 244
+a = 255
+
+[colors.ansi_bright_black]
+r = 88
+g = 91
+b = 112
+a = 255
+
+[colors.ansi_bright_red]
+r = 243
+g = 139
+b = 168
+a = 255
+
+[colors.ansi_bright_green]
+r = 166
+g = 227
+b = 161
+a = 255
+
+[colors.ansi_bright_yellow]
+r = 249
+g = 226
+b = 175
+a = 255
+
+[colors.ansi_bright_blue]
+r = 137
+g = 180
+b = 250
+a = 255
+
+[colors.ansi_bright_magenta]
+r = 245
+g = 194
+b = 231
+a = 255
+
+[colors.ansi_bright_cyan]
+r = 148
+g = 226
+b = 213
+a = 255
+
+[colors.ansi_bright_white]
+r = 166
+g = 173
+b = 200
+a = 255
+
+[fonts]
+family = "monospace"
+size = 14.0
+line_height = 1.5
+
+[spacing]
+block_spacing = 10.0
+padding = 8.0
+border_width = 1.0
+border_radius = 4.0
+
+[syntax.keyword]
+r = 203
+g = 166
+b = 247
+a = 255
+
+[syntax.string]
+r = 166
+g = 227
+b = 161
+a = 255
+
+[syntax.comment]
+r = 108
+g = 112
+b = 134
+a = 255
+
+[syntax.function]
+r = 137
+g = 180
+b = 250
+a = 255
+
+[syntax.variable]
+r = 205
+g = 214
+b = 244
+a = 255
+
+[syntax.number]
+r = 250
+g = 179
+b = 135
+a = 255
+
+[syntax.operator]
+r = 148
+g = 226
+b = 213
+a = 255
+
+[syntax.type_name]
+r = 249
+g = 226
+b = 175
+a = 255
