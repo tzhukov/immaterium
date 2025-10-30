@@ -14,6 +14,7 @@ block_spacing = 8.0
 [ai]
 default_provider = "ollama"
 enable_suggestions = true
+operation_mode = "hybrid"  # Options: "terminal_only", "ai_prompt_only", "hybrid"
 
 [ai.providers.ollama]
 base_url = "http://localhost:11434"

@@ -29,7 +29,7 @@ impl<'a> BlockWidget<'a> {
             Color32::from_rgba_premultiplied(40, 40, 40, 20)
         };
 
-        egui::Frame::none()
+        let frame_response = egui::Frame::none()
             .fill(bg_color)
             .stroke(egui::Stroke::new(1.0, block_color))
             .inner_margin(8.0)
@@ -117,33 +117,43 @@ impl<'a> BlockWidget<'a> {
                                 .strong(),
                         );
                         
-                        if ui.button(
-                            RichText::new("✅ Execute")
+                        let execute_btn = ui.button(
+                            RichText::new("✅ Execute (Enter)")
                                 .color(Color32::from_rgb(72, 209, 204))
-                        ).clicked() {
+                        );
+                        
+                        // Check for Enter key
+                        if execute_btn.clicked() || ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                             response.approve_command = true;
                         }
                         
                         if ui.button(
-                            RichText::new("✏️ Edit")
+                            RichText::new("✏️ Edit (E)")
                                 .color(Color32::from_rgb(100, 149, 237))
-                        ).clicked() {
+                        ).clicked() || ui.input(|i| i.key_pressed(egui::Key::E)) {
                             response.edit_command = true;
                         }
                         
                         if ui.button(
-                            RichText::new("🔄 Regenerate")
+                            RichText::new("🔄 Regenerate (R)")
                                 .color(Color32::from_rgb(255, 215, 0))
-                        ).clicked() {
+                        ).clicked() || ui.input(|i| i.key_pressed(egui::Key::R)) {
                             response.regenerate_command = true;
                         }
                         
                         if ui.button(
-                            RichText::new("❌ Cancel")
+                            RichText::new("❌ Cancel (Esc)")
                                 .color(Color32::from_rgb(220, 20, 60))
-                        ).clicked() {
+                        ).clicked() || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
                             response.reject_command = true;
                         }
+                        
+                        ui.label(
+                            RichText::new("Press Enter to execute")
+                                .italics()
+                                .color(Color32::from_rgb(150, 150, 150))
+                                .size(self.font_size - 2.0)
+                        );
                     });
                 }
 
@@ -187,23 +197,22 @@ impl<'a> BlockWidget<'a> {
                         });
                     });
                 }
-
-                // Handle click for selection
-                let interact_rect = ui.available_rect_before_wrap();
-                let interact_response = ui.interact(
-                    interact_rect,
-                    ui.id().with(&self.block.id),
-                    egui::Sense::click(),
-                );
-
-                if interact_response.clicked() {
-                    response.selected = true;
-                }
-
-                if interact_response.secondary_clicked() {
-                    response.show_context_menu = true;
-                }
             });
+
+        // Handle click for selection on the entire frame
+        let interact_response = ui.interact(
+            frame_response.response.rect,
+            ui.id().with(&self.block.id),
+            egui::Sense::click(),
+        );
+
+        if interact_response.clicked() {
+            response.selected = true;
+        }
+
+        if interact_response.secondary_clicked() {
+            response.show_context_menu = true;
+        }
 
         response
     }

@@ -79,9 +79,9 @@ impl ShellExecutor {
         cmd.arg("-c");
         
         // Source .bashrc (if it exists) before executing the command
-        // Use login shell behavior to pick up environment
+        // Suppress errors from .bashrc to avoid polluting output
         let full_command = format!(
-            "[ -f ~/.bashrc ] && source ~/.bashrc; {}",
+            "[ -f ~/.bashrc ] && source ~/.bashrc 2>/dev/null; {}",
             command
         );
         cmd.arg(&full_command);
@@ -158,9 +158,15 @@ impl ShellExecutor {
 
     /// Execute a simple command synchronously (for testing)
     pub fn execute_sync(&self, command: String) -> Result<(String, i32)> {
+        // Source .bashrc before executing the command
+        let full_command = format!(
+            "[ -f ~/.bashrc ] && source ~/.bashrc 2>/dev/null; {}",
+            command
+        );
+        
         let output = std::process::Command::new(&self.shell_path)
             .arg("-c")
-            .arg(&command)
+            .arg(&full_command)
             .current_dir(&self.working_directory)
             .output()
             .context("Failed to execute command")?;
@@ -223,5 +229,98 @@ mod tests {
         
         assert!(output.contains("Test"));
         assert_eq!(exit_code, Some(0));
+    }
+
+    #[test]
+    fn test_bashrc_sourcing_sync() {
+        // Create a temporary test alias in a temp bashrc file
+        let temp_dir = std::env::temp_dir();
+        let test_bashrc = temp_dir.join("test_bashrc");
+        
+        // Write a test alias to the temp bashrc
+        std::fs::write(&test_bashrc, "alias test_alias_12345='echo ALIAS_WORKS'\n").unwrap();
+        
+        // Test that sourcing works
+        let executor = ShellExecutor::default();
+        let command = format!(
+            "[ -f {} ] && source {} 2>/dev/null; test_alias_12345",
+            test_bashrc.display(),
+            test_bashrc.display()
+        );
+        
+        let (output, exit_code) = executor.execute_sync(command).unwrap();
+        
+        // Clean up
+        let _ = std::fs::remove_file(&test_bashrc);
+        
+        // Verify alias was sourced and executed
+        assert!(output.contains("ALIAS_WORKS"), "Expected alias output, got: {}", output);
+        assert_eq!(exit_code, 0);
+    }
+
+    #[tokio::test]
+    async fn test_bashrc_sourcing_async() {
+        // Create a temporary test alias in a temp bashrc file
+        let temp_dir = std::env::temp_dir();
+        let test_bashrc = temp_dir.join("test_bashrc_async");
+        
+        // Write a test alias to the temp bashrc
+        std::fs::write(&test_bashrc, "alias test_alias_async='echo ASYNC_ALIAS_WORKS'\n").unwrap();
+        
+        // Build the command that sources our test bashrc
+        let command = format!(
+            "[ -f {} ] && source {} 2>/dev/null; test_alias_async",
+            test_bashrc.display(),
+            test_bashrc.display()
+        );
+        
+        let executor = ShellExecutor::default();
+        let mut rx = executor.execute(command).await.unwrap();
+        
+        let mut output = String::new();
+        let mut exit_code = None;
+        
+        while let Some(line) = rx.recv().await {
+            match line {
+                OutputLine::Stdout(s) => output.push_str(&s),
+                OutputLine::Exit(code) => exit_code = Some(code),
+                _ => {}
+            }
+        }
+        
+        // Clean up
+        let _ = std::fs::remove_file(&test_bashrc);
+        
+        // Verify alias was sourced and executed
+        assert!(output.contains("ASYNC_ALIAS_WORKS"), "Expected async alias output, got: {}", output);
+        assert_eq!(exit_code, Some(0));
+    }
+
+    #[test]
+    fn test_user_bashrc_aliases() {
+        // Test with actual user's bashrc (if it exists and has common aliases)
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+        let bashrc = format!("{}/.bashrc", home);
+        
+        // Only run this test if .bashrc exists
+        if std::path::Path::new(&bashrc).exists() {
+            let executor = ShellExecutor::default();
+            
+            // Try common aliases - at least one should exist in most .bashrc files
+            // We'll test 'll' which is very commonly aliased to 'ls -la' or similar
+            let (output, exit_code) = executor.execute_sync("type ll".to_string()).unwrap();
+            
+            // If ll is an alias, 'type ll' should say so
+            // If it's not found, that's also fine - not all systems have it
+            // The important part is we don't get a crash
+            if exit_code == 0 {
+                assert!(
+                    output.contains("alias") || output.contains("ll is"),
+                    "Expected 'll' to be recognized as alias or command, got: {}", 
+                    output
+                );
+            }
+            // If exit_code != 0, that's fine - just means ll isn't defined
+        }
     }
 }

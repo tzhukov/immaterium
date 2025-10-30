@@ -68,6 +68,8 @@ pub struct AiConfig {
     pub enable_suggestions: bool,
     pub operation_mode: OperationMode,
     pub providers: HashMap<String, AiProviderConfig>,
+    #[serde(default)]
+    pub selected_model: Option<String>, // Last selected model
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -119,6 +121,7 @@ impl Default for AiConfig {
             enable_suggestions: true,
             operation_mode: OperationMode::Hybrid,
             providers,
+            selected_model: None,
         }
     }
 }

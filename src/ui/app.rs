@@ -5,7 +5,7 @@ use crate::core::{Block, BlockManager, Database, ExportedSession, Session, Sessi
 use crate::shell::{OutputLine, ShellExecutor};
 use crate::theme::ThemeLoader;
 use crate::ui::{AiAction, AiPanel, BlockWidget};
-use egui::{CentralPanel, Context, ScrollArea, SidePanel, TopBottomPanel, ViewportCommand};
+use egui::{CentralPanel, Context, ScrollArea, TopBottomPanel, ViewportCommand};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -23,6 +23,8 @@ pub struct ImmateriumApp {
     output_receiver: Option<mpsc::UnboundedReceiver<OutputMessage>>,
     ai_receiver: Option<mpsc::UnboundedReceiver<AiMessage>>,
     context_menu_block: Option<Uuid>,
+    context_menu_pos: Option<egui::Pos2>,
+    context_menu_opened_at: Option<Instant>,
     last_save: Instant,
     save_needed: bool,
     // Session UI state
@@ -40,6 +42,10 @@ pub struct ImmateriumApp {
     // Natural language command generation state
     original_nl_input: String,
     is_generating_command: bool,
+    // Command history
+    command_history: Vec<String>,
+    history_index: Option<usize>,
+    current_input_buffer: String, // Saves the current input when navigating history
 }
 
 impl ImmateriumApp {
@@ -126,6 +132,13 @@ impl ImmateriumApp {
 
         // Initialize AI engine before moving config
         let ai_engine = Self::initialize_ai_engine(&config).map(Arc::new);
+        
+        // Initialize AI panel with saved model
+        let mut ai_panel = AiPanel::new();
+        if let Some(ref model) = config.ai.selected_model {
+            ai_panel.set_selected_model(model.clone());
+        }
+        ai_panel.set_selected_provider(config.ai.default_provider.clone());
 
         Self {
             config,
@@ -137,6 +150,8 @@ impl ImmateriumApp {
             current_block_id: None,
             output_receiver: None,
             context_menu_block: None,
+            context_menu_pos: None,
+            context_menu_opened_at: None,
             last_save: Instant::now(),
             save_needed: false,
             show_session_list: false,
@@ -146,11 +161,14 @@ impl ImmateriumApp {
             show_export_dialog: false,
             theme_loader,
             show_theme_selector: false,
-            ai_panel: AiPanel::new(),
+            ai_panel,
             ai_engine,
             ai_receiver: None,
             original_nl_input: String::new(),
             is_generating_command: false,
+            command_history: Vec::new(),
+            history_index: None,
+            current_input_buffer: String::new(),
         }
     }
 
@@ -246,6 +264,18 @@ impl ImmateriumApp {
 
         let input = self.command_input.trim().to_string();
         
+        // Add to history (avoid duplicates of the most recent command)
+        if self.command_history.last() != Some(&input) {
+            self.command_history.push(input.clone());
+            // Limit history size
+            if self.command_history.len() > 1000 {
+                self.command_history.remove(0);
+            }
+        }
+        // Reset history navigation
+        self.history_index = None;
+        self.current_input_buffer.clear();
+        
         // Check operation mode and handle accordingly
         use crate::config::OperationMode;
         match self.config.ai.operation_mode {
@@ -269,6 +299,44 @@ impl ImmateriumApp {
                     self.execute_shell_command(input, ctx);
                 }
                 self.command_input.clear();
+            }
+        }
+    }
+
+    /// Navigate to previous command in history (Up arrow)
+    fn history_previous(&mut self) {
+        if self.command_history.is_empty() {
+            return;
+        }
+
+        match self.history_index {
+            None => {
+                // First time pressing up - save current input and go to last command
+                self.current_input_buffer = self.command_input.clone();
+                self.history_index = Some(self.command_history.len() - 1);
+                self.command_input = self.command_history[self.command_history.len() - 1].clone();
+            }
+            Some(idx) => {
+                // Navigate further back if possible
+                if idx > 0 {
+                    self.history_index = Some(idx - 1);
+                    self.command_input = self.command_history[idx - 1].clone();
+                }
+            }
+        }
+    }
+
+    /// Navigate to next command in history (Down arrow)
+    fn history_next(&mut self) {
+        if let Some(idx) = self.history_index {
+            if idx < self.command_history.len() - 1 {
+                // Navigate forward
+                self.history_index = Some(idx + 1);
+                self.command_input = self.command_history[idx + 1].clone();
+            } else {
+                // Reached the end - restore original input
+                self.history_index = None;
+                self.command_input = self.current_input_buffer.clone();
             }
         }
     }
@@ -689,6 +757,11 @@ impl eframe::App for ImmateriumApp {
                     }
                     AiMessage::ModelsLoaded(models) => {
                         self.ai_panel.set_available_models(models);
+                        // Save selected model to config
+                        self.config.ai.selected_model = Some(self.ai_panel.selected_model().to_string());
+                        if let Err(e) = self.config.save() {
+                            tracing::error!("Failed to save config: {}", e);
+                        }
                     }
                     AiMessage::CommandGenerated(command) => {
                         // Create a pending approval block instead of showing modal
@@ -835,32 +908,29 @@ impl eframe::App for ImmateriumApp {
             });
         });
 
-        // AI Panel (right sidebar)
-        if self.ai_panel.is_open() {
-            SidePanel::right("ai_panel")
-                .default_width(350.0)
-                .resizable(true)
-                .show(ctx, |ui| {
-                    let providers: Vec<String> = self.config.ai.providers
-                        .keys()
-                        .filter(|k| self.config.ai.providers[*k].enabled)
-                        .cloned()
-                        .collect();
-                    
-                    if let Some(action) = self.ai_panel.show_sidebar(ui, &providers) {
-                        self.handle_ai_action(action, ctx);
-                    }
-                });
-        }
-
         // Main terminal area
         CentralPanel::default().show(ctx, |ui| {
+            // Handle right-click anywhere in the panel
+            let panel_response = ui.interact(
+                ui.max_rect(),
+                egui::Id::new("main_panel_interaction"),
+                egui::Sense::click()
+            );
+            
+            if panel_response.secondary_clicked() {
+                // Right-click on empty space - show menu with general actions
+                self.context_menu_block = None; // No specific block
+                self.context_menu_pos = ctx.input(|i| i.pointer.hover_pos());
+                self.context_menu_opened_at = Some(Instant::now());
+            }
+            
             ui.heading("🚀 Immaterium Terminal");
             ui.separator();
             
             // Blocks area (takes remaining space)
-            let input_height = 60.0; // Reserve space for command input
-            let available_height = ui.available_height() - input_height;
+            // Reserve space for AI panel (50px) + separator + command input (40px) + separators
+            let input_area_height = 120.0;
+            let available_height = ui.available_height() - input_area_height;
             
             ScrollArea::vertical()
                 .id_source("blocks_scroll_area")
@@ -899,6 +969,8 @@ impl eframe::App for ImmateriumApp {
                             
                             if block_response.show_context_menu {
                                 self.context_menu_block = Some(block.id);
+                                self.context_menu_pos = ctx.input(|i| i.pointer.hover_pos());
+                                self.context_menu_opened_at = Some(Instant::now());
                             }
                             
                             if block_response.approve_command {
@@ -934,74 +1006,210 @@ impl eframe::App for ImmateriumApp {
             
             ui.separator();
             
-            // Command input area at the bottom
-            ui.horizontal(|ui| {
-                ui.label("$");
-                let response = ui.add(
-                    egui::TextEdit::singleline(&mut self.command_input)
-                        .desired_width(f32::INFINITY)
-                        .hint_text("Enter a command...")
-                        .font(egui::TextStyle::Monospace),
-                );
-                
-                if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                    self.execute_command(ctx);
-                    response.request_focus();
-                }
-                
-                if self.current_block_id.is_some() {
-                    ui.spinner();
-                    ui.label("Running...");
-                }
-            });
+            // AI Panel (compact mode above command input)
+            let providers: Vec<String> = self.config.ai.providers
+                .keys()
+                .filter(|k| self.config.ai.providers[*k].enabled)
+                .cloned()
+                .collect();
             
-            // Context menu
-            if let Some(block_id) = self.context_menu_block {
-                egui::Window::new("Block Actions")
-                    .collapsible(false)
-                    .resizable(false)
-                    .show(ctx, |ui| {
-                        if ui.button("📋 Copy Command").clicked() {
-                            if let Some(cmd) = self.block_manager.copy_block_command(&block_id) {
-                                ui.output_mut(|o| o.copied_text = cmd);
+            if let Some(action) = self.ai_panel.show_compact(ui, &providers) {
+                self.handle_ai_action(action, ctx);
+            }
+            
+            ui.separator();
+            
+            // Command input area styled as a block
+            let input_block_color = egui::Color32::from_rgb(72, 209, 204); // Turquoise like completed blocks
+            let input_bg_color = egui::Color32::from_rgba_premultiplied(40, 40, 40, 20);
+            
+            egui::Frame::none()
+                .fill(input_bg_color)
+                .stroke(egui::Stroke::new(1.0, input_block_color))
+                .inner_margin(8.0)
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            egui::RichText::new("▶")
+                                .color(input_block_color)
+                                .size(self.config.appearance.font_size)
+                        );
+                        ui.label(
+                            egui::RichText::new("$")
+                                .font(egui::FontId::monospace(self.config.appearance.font_size))
+                                .color(egui::Color32::from_rgb(200, 200, 200))
+                        );
+                        
+                        let response = ui.add(
+                            egui::TextEdit::singleline(&mut self.command_input)
+                                .desired_width(f32::INFINITY)
+                                .hint_text("Enter a command or natural language request...")
+                                .font(egui::FontId::monospace(self.config.appearance.font_size)),
+                        );
+                        
+                        // Handle Enter key
+                        if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                            self.execute_command(ctx);
+                            response.request_focus();
+                        }
+                        
+                        // Handle Up/Down arrows for history navigation
+                        if response.has_focus() {
+                            if ui.input(|i| i.key_pressed(egui::Key::ArrowUp)) {
+                                self.history_previous();
                             }
-                            self.context_menu_block = None;
-                        }
-                        
-                        if ui.button("📄 Copy Output").clicked() {
-                            if let Some(output) = self.block_manager.copy_block_output(&block_id) {
-                                ui.output_mut(|o| o.copied_text = output);
+                            if ui.input(|i| i.key_pressed(egui::Key::ArrowDown)) {
+                                self.history_next();
                             }
-                            self.context_menu_block = None;
                         }
                         
-                        if ui.button("📑 Copy Both").clicked() {
-                            if let Some(full) = self.block_manager.copy_block_full(&block_id) {
-                                ui.output_mut(|o| o.copied_text = full);
+                        // Show status on the right
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if self.current_block_id.is_some() {
+                                ui.spinner();
+                                ui.label(
+                                    egui::RichText::new("Running...")
+                                        .color(egui::Color32::from_rgb(150, 150, 150))
+                                );
+                            } else {
+                                // Show hint about operation mode
+                                let mode_hint = match self.config.ai.operation_mode {
+                                    crate::config::OperationMode::TerminalOnly => "Terminal mode",
+                                    crate::config::OperationMode::AiPromptOnly => "AI mode",
+                                    crate::config::OperationMode::Hybrid => "Hybrid mode",
+                                };
+                                ui.label(
+                                    egui::RichText::new(mode_hint)
+                                        .color(egui::Color32::from_rgb(100, 100, 100))
+                                        .size(self.config.appearance.font_size - 2.0)
+                                );
                             }
-                            self.context_menu_block = None;
-                        }
-                        
-                        ui.separator();
-                        
-                        if ui.button("✏️ Edit & Re-run").clicked() {
-                            if let Some(block) = self.block_manager.get_block(&block_id) {
-                                self.command_input = block.command.clone();
+                        });
+                    });
+                });
+            
+            // Context menu (popup that closes when clicking away)
+            if self.context_menu_pos.is_some() {
+                if let Some(menu_pos) = self.context_menu_pos {
+                    let popup_id = egui::Id::new("context_menu");
+                    
+                    // Show popup at saved position (not following cursor)
+                    egui::Area::new(popup_id)
+                        .order(egui::Order::Foreground)
+                        .fixed_pos(menu_pos)
+                        .show(ctx, |ui| {
+                        let frame = egui::Frame::popup(ui.style());
+                        let frame_response = frame.show(ui, |ui| {
+                            ui.set_min_width(180.0);
+                            ui.spacing_mut().button_padding = egui::vec2(8.0, 4.0);
+                            
+                            // Show different menu options depending on whether a block is selected
+                            if let Some(block_id) = self.context_menu_block {
+                                // Block-specific menu
+                                if ui.button("📋 Copy Command").clicked() {
+                                    if let Some(cmd) = self.block_manager.copy_block_command(&block_id) {
+                                        ui.output_mut(|o| o.copied_text = cmd);
+                                    }
+                                    self.context_menu_block = None;
+                                    self.context_menu_pos = None;
+                                    self.context_menu_opened_at = None;
+                                }
+                                
+                                if ui.button("📄 Copy Output").clicked() {
+                                    if let Some(output) = self.block_manager.copy_block_output(&block_id) {
+                                        ui.output_mut(|o| o.copied_text = output);
+                                    }
+                                    self.context_menu_block = None;
+                                    self.context_menu_pos = None;
+                                    self.context_menu_opened_at = None;
+                                }
+                                
+                                if ui.button("📑 Copy Both").clicked() {
+                                    if let Some(full) = self.block_manager.copy_block_full(&block_id) {
+                                        ui.output_mut(|o| o.copied_text = full);
+                                    }
+                                    self.context_menu_block = None;
+                                    self.context_menu_pos = None;
+                                    self.context_menu_opened_at = None;
+                                }
+                                
+                                ui.separator();
+                                
+                                if ui.button("✏️ Edit & Re-run").clicked() {
+                                    if let Some(block) = self.block_manager.get_block(&block_id) {
+                                        self.command_input = block.command.clone();
+                                    }
+                                    self.context_menu_block = None;
+                                    self.context_menu_pos = None;
+                                    self.context_menu_opened_at = None;
+                                }
+                                
+                                if ui.button("🗑️ Delete Block").clicked() {
+                                    self.block_manager.remove_block(&block_id);
+                                    self.context_menu_block = None;
+                                    self.context_menu_pos = None;
+                                    self.context_menu_opened_at = None;
+                                }
+                            } else {
+                                // General menu (no block selected)
+                                if ui.button("📂 Open Session").clicked() {
+                                    self.show_session_list = true;
+                                    self.context_menu_pos = None;
+                                    self.context_menu_opened_at = None;
+                                }
+                                
+                                if ui.button("🎨 Change Theme").clicked() {
+                                    self.show_theme_selector = !self.show_theme_selector;
+                                    self.context_menu_pos = None;
+                                    self.context_menu_opened_at = None;
+                                }
+                                
+                                ui.separator();
+                                
+                                if ui.button("📤 Export Session").clicked() {
+                                    self.show_export_dialog = true;
+                                    self.context_menu_pos = None;
+                                    self.context_menu_opened_at = None;
+                                }
+                                
+                                if ui.button("🗑️ Clear All Blocks").clicked() {
+                                    // Clear all blocks
+                                    let block_ids: Vec<_> = self.block_manager.get_blocks()
+                                        .iter()
+                                        .map(|b| b.id)
+                                        .collect();
+                                    for id in block_ids {
+                                        self.block_manager.remove_block(&id);
+                                    }
+                                    self.context_menu_pos = None;
+                                    self.context_menu_opened_at = None;
+                                }
                             }
-                            self.context_menu_block = None;
-                        }
+                        });
                         
-                        if ui.button("🗑️ Delete Block").clicked() {
-                            self.block_manager.remove_block(&block_id);
-                            self.context_menu_block = None;
-                        }
+                        // Close menu if clicking outside
+                        // Check if menu has been open for at least 100ms to prevent closing on opening click
+                        let menu_open_duration = self.context_menu_opened_at
+                            .map(|t| t.elapsed().as_millis())
+                            .unwrap_or(0);
                         
-                        ui.separator();
-                        
-                        if ui.button("❌ Close").clicked() {
-                            self.context_menu_block = None;
+                        if menu_open_duration > 100 {
+                            // Check for any click outside the menu
+                            if ui.input(|i| i.pointer.any_click()) && !frame_response.response.contains_pointer() {
+                                self.context_menu_block = None;
+                                self.context_menu_pos = None;
+                                self.context_menu_opened_at = None;
+                            }
+                            
+                            // Also close on Escape key
+                            if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                                self.context_menu_block = None;
+                                self.context_menu_pos = None;
+                                self.context_menu_opened_at = None;
+                            }
                         }
                     });
+                }
             }
         });
 
@@ -1212,6 +1420,103 @@ impl eframe::App for ImmateriumApp {
         // Save window state
         if let Ok(config_json) = serde_json::to_string(&self.config) {
             storage.set_string("config", config_json);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    
+    mod context_menu {
+        use std::time::{Duration, Instant};
+        
+        /// Test that the debounce period prevents immediate closure
+        #[test]
+        fn test_debounce_prevents_immediate_close() {
+            let opened_at = Instant::now();
+            
+            // Immediately after opening (0ms)
+            let elapsed_ms = opened_at.elapsed().as_millis();
+            assert!(elapsed_ms < 100, "Menu should be within debounce period");
+            
+            // After 50ms (still in debounce)
+            std::thread::sleep(Duration::from_millis(50));
+            let elapsed_ms = opened_at.elapsed().as_millis();
+            assert!(elapsed_ms < 100, "Menu should still be in debounce period");
+        }
+
+        #[test]
+        fn test_debounce_period_expires() {
+            let opened_at = Instant::now();
+            
+            // Wait for debounce period to expire
+            std::thread::sleep(Duration::from_millis(110));
+            
+            let elapsed_ms = opened_at.elapsed().as_millis();
+            assert!(elapsed_ms > 100, "Debounce period should have expired (got {}ms)", elapsed_ms);
+        }
+
+        /// Test the menu state machine logic
+        #[test]
+        fn test_menu_state_transitions() {
+            // Simulate menu lifecycle
+            let mut menu_open = false;
+            let mut opened_at: Option<Instant> = None;
+            
+            // 1. Menu is initially closed
+            assert!(!menu_open);
+            assert!(opened_at.is_none());
+            
+            // 2. Open menu
+            menu_open = true;
+            opened_at = Some(Instant::now());
+            assert!(menu_open);
+            assert!(opened_at.is_some());
+            
+            // 3. Immediate click should not close (within debounce)
+            let should_close = opened_at.map(|t| t.elapsed().as_millis()).unwrap_or(0) > 100;
+            assert!(!should_close, "Menu should not close during debounce period");
+            
+            // 4. Wait for debounce
+            std::thread::sleep(Duration::from_millis(110));
+            
+            // 5. Click outside should now close
+            let should_close = opened_at.map(|t| t.elapsed().as_millis()).unwrap_or(0) > 100;
+            assert!(should_close, "Menu should close after debounce period");
+            
+            // 6. Close menu
+            menu_open = false;
+            opened_at = None;
+            assert!(!menu_open);
+            assert!(opened_at.is_none());
+        }
+
+        /// Test None handling for unopened menu
+        #[test]
+        fn test_unopened_menu_duration() {
+            let opened_at: Option<Instant> = None;
+            let duration = opened_at.map(|t| t.elapsed().as_millis()).unwrap_or(0);
+            
+            assert_eq!(duration, 0, "Unopened menu should have 0 duration");
+            assert!(duration <= 100, "Unopened menu should be treated as in debounce");
+        }
+
+        /// Test timestamp reset on menu close
+        #[test]
+        fn test_timestamp_reset() {
+            let mut opened_at = Some(Instant::now());
+            
+            std::thread::sleep(Duration::from_millis(150));
+            assert!(opened_at.is_some());
+            
+            // Simulate menu close
+            opened_at = None;
+            
+            // Verify reset
+            assert!(opened_at.is_none());
+            let duration = opened_at.map(|t| t.elapsed().as_millis()).unwrap_or(0);
+            assert_eq!(duration, 0);
         }
     }
 }

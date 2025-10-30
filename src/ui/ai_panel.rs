@@ -84,6 +84,10 @@ impl AiPanel {
         self.selected_provider = provider;
         self.available_models.clear();
     }
+    
+    pub fn set_selected_model(&mut self, model: String) {
+        self.selected_model = model;
+    }
 
     pub fn set_available_models(&mut self, models: Vec<String>) {
         self.available_models = models;
@@ -111,6 +115,59 @@ impl AiPanel {
     pub fn clear_conversation(&mut self) {
         self.conversation.clear();
         self.response.clear();
+    }
+
+    /// Draw a compact AI panel (for bottom of screen)
+    pub fn show_compact(&mut self, ui: &mut Ui, providers: &[String]) -> Option<AiAction> {
+        let mut action = None;
+
+        ui.group(|ui| {
+            ui.horizontal(|ui| {
+                ui.label("🤖");
+                
+                // Provider selection
+                egui::ComboBox::from_id_source("ai_provider_compact")
+                    .selected_text(&self.selected_provider)
+                    .width(100.0)
+                    .show_ui(ui, |ui| {
+                        for provider in providers {
+                            if ui
+                                .selectable_label(provider == &self.selected_provider, provider)
+                                .clicked()
+                            {
+                                action = Some(AiAction::ProviderChanged(provider.clone()));
+                            }
+                        }
+                    });
+
+                ui.separator();
+
+                // Model selection
+                if self.available_models.is_empty() {
+                    if ui.small_button("📥 Load").clicked() {
+                        action = Some(AiAction::LoadModels);
+                    }
+                } else {
+                    egui::ComboBox::from_id_source("ai_model_compact")
+                        .selected_text(&self.selected_model)
+                        .width(150.0)
+                        .show_ui(ui, |ui| {
+                            for model in &self.available_models {
+                                ui.selectable_value(&mut self.selected_model, model.clone(), model);
+                            }
+                        });
+                }
+                
+                ui.separator();
+                
+                ui.checkbox(&mut self.include_context, "Context");
+                if self.include_context {
+                    ui.add(egui::Slider::new(&mut self.context_blocks, 1..=20).text("blocks"));
+                }
+            });
+        });
+
+        action
     }
 
     /// Draw the AI panel in sidebar mode
