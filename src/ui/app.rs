@@ -1,4 +1,5 @@
 use crate::ai::{build_minimal_context, AiEngine, ChatRequest, ContextConfig};
+use crate::ai::providers::{GroqProvider, OllamaProvider, OpenAiProvider};
 use crate::config::Config;
 use crate::core::{Block, BlockManager, Database, ExportedSession, Session, SessionManager};
 use crate::shell::{OutputLine, ShellExecutor};
@@ -6,6 +7,7 @@ use crate::theme::ThemeLoader;
 use crate::ui::{AiAction, AiPanel, BlockWidget};
 use egui::{CentralPanel, Context, ScrollArea, SidePanel, TopBottomPanel, ViewportCommand};
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use uuid::Uuid;
@@ -19,6 +21,7 @@ pub struct ImmateriumApp {
     session_manager: Option<SessionManager>,
     current_block_id: Option<Uuid>,
     output_receiver: Option<mpsc::UnboundedReceiver<OutputMessage>>,
+    ai_receiver: Option<mpsc::UnboundedReceiver<AiMessage>>,
     context_menu_block: Option<Uuid>,
     last_save: Instant,
     save_needed: bool,
@@ -33,7 +36,10 @@ pub struct ImmateriumApp {
     show_theme_selector: bool,
     // AI
     ai_panel: AiPanel,
-    ai_engine: Option<AiEngine>,
+    ai_engine: Option<Arc<AiEngine>>,
+    // Natural language command generation state
+    original_nl_input: String,
+    is_generating_command: bool,
 }
 
 impl ImmateriumApp {
@@ -118,6 +124,9 @@ impl ImmateriumApp {
             block_manager.add_block(block.clone());
         }
 
+        // Initialize AI engine before moving config
+        let ai_engine = Self::initialize_ai_engine(&config).map(Arc::new);
+
         Self {
             config,
             command_input: String::new(),
@@ -138,7 +147,89 @@ impl ImmateriumApp {
             theme_loader,
             show_theme_selector: false,
             ai_panel: AiPanel::new(),
-            ai_engine: None,
+            ai_engine,
+            ai_receiver: None,
+            original_nl_input: String::new(),
+            is_generating_command: false,
+        }
+    }
+
+    /// Initialize AI engine with configured providers
+    fn initialize_ai_engine(config: &Config) -> Option<AiEngine> {
+        let mut engine = AiEngine::new();
+        let mut providers_registered = 0;
+
+        // Initialize Ollama provider
+        if let Some(ollama_config) = config.ai.providers.get("ollama") {
+            if ollama_config.enabled {
+                let base_url = ollama_config.base_url.clone()
+                    .unwrap_or_else(|| "http://localhost:11434".to_string());
+                
+                let provider = OllamaProvider::new(base_url, ollama_config.model.clone());
+                engine.register_provider(Arc::new(provider));
+                providers_registered += 1;
+                tracing::info!("Registered Ollama provider");
+            }
+        }
+
+        // Initialize OpenAI provider
+        if let Some(openai_config) = config.ai.providers.get("openai") {
+            if openai_config.enabled {
+                if let Some(api_key) = &openai_config.api_key {
+                    // Expand environment variables
+                    let api_key = shellexpand::env(api_key)
+                        .unwrap_or(std::borrow::Cow::Borrowed(api_key))
+                        .to_string();
+                    
+                    if !api_key.is_empty() && !api_key.starts_with("${") {
+                        let provider = OpenAiProvider::new(api_key, openai_config.model.clone());
+                        engine.register_provider(Arc::new(provider));
+                        providers_registered += 1;
+                        tracing::info!("Registered OpenAI provider");
+                    } else {
+                        tracing::warn!("OpenAI API key not set or is a placeholder");
+                    }
+                } else {
+                    tracing::warn!("OpenAI enabled but no API key configured");
+                }
+            }
+        }
+
+        // Initialize Groq provider
+        if let Some(groq_config) = config.ai.providers.get("groq") {
+            if groq_config.enabled {
+                if let Some(api_key) = &groq_config.api_key {
+                    // Expand environment variables
+                    let api_key = shellexpand::env(api_key)
+                        .unwrap_or(std::borrow::Cow::Borrowed(api_key))
+                        .to_string();
+                    
+                    if !api_key.is_empty() && !api_key.starts_with("${") {
+                        let base_url = groq_config.base_url.clone()
+                            .unwrap_or_else(|| "https://api.groq.com/openai/v1".to_string());
+                        
+                        let provider = GroqProvider::new(api_key, groq_config.model.clone());
+                        engine.register_provider(Arc::new(provider));
+                        providers_registered += 1;
+                        tracing::info!("Registered Groq provider");
+                    } else {
+                        tracing::warn!("Groq API key not set or is a placeholder");
+                    }
+                } else {
+                    tracing::warn!("Groq enabled but no API key configured");
+                }
+            }
+        }
+
+        // Set default provider
+        if providers_registered > 0 {
+            if let Err(e) = engine.set_default_provider(&config.ai.default_provider) {
+                tracing::warn!("Failed to set default provider: {}, using first available", e);
+            }
+            Some(engine)
+        } else {
+            tracing::warn!("No AI providers registered");
+            None
         }
     }
 
@@ -153,9 +244,125 @@ impl ImmateriumApp {
             return;
         }
 
-        let command = self.command_input.trim().to_string();
-        self.command_input.clear();
+        let input = self.command_input.trim().to_string();
+        
+        // Check operation mode and handle accordingly
+        use crate::config::OperationMode;
+        match self.config.ai.operation_mode {
+            OperationMode::TerminalOnly => {
+                // Mode 1: Always execute as shell command
+                self.execute_shell_command(input, ctx);
+                self.command_input.clear();
+            }
+            OperationMode::AiPromptOnly => {
+                // Mode 2: Always treat as AI prompt for command generation
+                tracing::info!("AI Prompt mode: converting to command: {}", input);
+                self.convert_natural_language_to_command(input, ctx);
+                self.command_input.clear();
+            }
+            OperationMode::Hybrid => {
+                // Mode 3: Auto-detect if it's NL or shell command
+                if self.config.ai.enable_suggestions && self.is_natural_language(&input) {
+                    tracing::info!("Detected natural language input, converting to command: {}", input);
+                    self.convert_natural_language_to_command(input, ctx);
+                } else {
+                    self.execute_shell_command(input, ctx);
+                }
+                self.command_input.clear();
+            }
+        }
+    }
 
+    /// Detect if input is natural language vs a shell command
+    fn is_natural_language(&self, input: &str) -> bool {
+        let input_lower = input.to_lowercase();
+        
+        // If it starts with common shell patterns, it's a command
+        let shell_patterns = [
+            "cd ", "ls ", "cat ", "grep ", "find ", "echo ", "pwd", "mkdir ",
+            "rm ", "cp ", "mv ", "chmod ", "chown ", "ps ", "kill ", "sudo ",
+            "apt ", "yum ", "dnf ", "pacman ", "git ", "docker ", "npm ", "cargo ",
+            "./", "../", "~/", "/", "|", "&&", "||", ">", "<", "$(", "`",
+        ];
+        
+        for pattern in &shell_patterns {
+            if input.starts_with(pattern) || input.contains(pattern) {
+                return false;
+            }
+        }
+        
+        // If it contains question words or is a sentence, likely natural language
+        let nl_indicators = [
+            "how do i", "how to", "show me", "list all", "find all", "what is",
+            "create a", "delete the", "remove all", "search for", "get the",
+            "install", "uninstall", "update", "upgrade", "check", "help",
+        ];
+        
+        for indicator in &nl_indicators {
+            if input_lower.contains(indicator) {
+                return true;
+            }
+        }
+        
+        // If it's a question or has multiple words without shell syntax, likely NL
+        input.contains('?') || (input.split_whitespace().count() > 2 && !input.contains('/'))
+    }
+
+    /// Convert natural language to shell command using AI
+    fn convert_natural_language_to_command(&mut self, nl_input: String, ctx: &Context) {
+        if self.ai_engine.is_none() {
+            tracing::warn!("AI engine not available, executing as regular command");
+            self.execute_shell_command(nl_input, ctx);
+            return;
+        }
+
+        self.original_nl_input = nl_input.clone();
+        self.is_generating_command = true;
+        
+        let engine = self.ai_engine.as_ref().unwrap().clone();
+        let ctx_clone = ctx.clone();
+        let (tx, rx) = mpsc::unbounded_channel();
+        self.ai_receiver = Some(rx);
+        
+        // Get current provider and model
+        let provider_name = self.ai_panel.selected_provider().to_string();
+        let model = self.ai_panel.selected_model().to_string();
+        
+        if model.is_empty() {
+            tracing::error!("No AI model selected");
+            self.is_generating_command = false;
+            return;
+        }
+        
+        // Build context for command generation
+        let system_prompt = "You are a helpful shell command generator. Convert natural language requests into valid bash commands. \
+                            Reply ONLY with the shell command, no explanations, no markdown, no code blocks. \
+                            If the request is ambiguous, choose the most common interpretation.";
+        
+        let user_prompt = format!("Convert this request to a bash command: {}", nl_input);
+        
+        let request = ChatRequest::new(model)
+            .with_system_message(system_prompt.to_string())
+            .with_user_message(user_prompt);
+        
+        self.runtime.spawn(async move {
+            match engine.chat_completion_with_provider(&provider_name, request).await {
+                Ok(response) => {
+                    let command = response.content.trim().to_string();
+                    tracing::info!("AI generated command: {}", command);
+                    let _ = tx.send(AiMessage::CommandGenerated(command));
+                    ctx_clone.request_repaint();
+                }
+                Err(e) => {
+                    tracing::error!("Failed to generate command: {}", e);
+                    let _ = tx.send(AiMessage::Error(format!("Failed to generate command: {}", e)));
+                    ctx_clone.request_repaint();
+                }
+            }
+        });
+    }
+
+    fn execute_shell_command(&mut self, command: String, ctx: &Context) {
         tracing::info!("Executing command: {}", command);
 
         // Create a new block
@@ -313,20 +520,49 @@ impl ImmateriumApp {
             }
             AiAction::LoadModels => {
                 tracing::info!("Loading AI models...");
-                // TODO: Initialize AI engine with providers from config
-                // For now, just set some dummy models
-                let models = vec![
-                    "qwen2.5-coder:3b".to_string(),
-                    "qwen2.5-coder:7b".to_string(),
-                    "qwen3:8b".to_string(),
-                ];
-                self.ai_panel.set_available_models(models);
+                
+                if let Some(engine) = &self.ai_engine {
+                    let provider_name = self.ai_panel.selected_provider().to_string();
+                    
+                    if let Some(provider) = engine.get_provider(&provider_name) {
+                        let provider_clone = provider.clone();
+                        let ctx_clone = ctx.clone();
+                        
+                        // Create channel for receiving models
+                        let (tx, rx) = mpsc::unbounded_channel();
+                        self.ai_receiver = Some(rx);
+                        
+                        self.runtime.spawn(async move {
+                            match provider_clone.list_models().await {
+                                Ok(models) => {
+                                    tracing::info!("Loaded {} models from {}", models.len(), provider_name);
+                                    let _ = tx.send(AiMessage::ModelsLoaded(models));
+                                    ctx_clone.request_repaint();
+                                }
+                                Err(e) => {
+                                    tracing::error!("Failed to load models: {}", e);
+                                    let _ = tx.send(AiMessage::Error(format!("Failed to load models: {}", e)));
+                                    ctx_clone.request_repaint();
+                                }
+                            }
+                        });
+                    }
+                } else {
+                    tracing::warn!("No AI engine available");
+                    // Set some default models for offline use
+                    let models = vec![
+                        "qwen2.5-coder:3b".to_string(),
+                        "qwen2.5-coder:7b".to_string(),
+                    ];
+                    self.ai_panel.set_available_models(models);
+                }
             }
             AiAction::SendPrompt(prompt) => {
                 tracing::info!("Sending prompt to AI: {}", prompt);
                 
                 // Add to conversation
                 self.ai_panel.add_user_message(prompt.clone());
+                self.ai_panel.start_streaming();
                 
                 // Build context from recent blocks if enabled
                 let blocks: Vec<Block> = self.block_manager.get_blocks()
@@ -340,20 +576,47 @@ impl ImmateriumApp {
                     prompt.clone()
                 };
                 
-                // TODO: Send to AI engine
-                // For now, just set a placeholder response
-                self.ai_panel.start_streaming();
-                ctx.request_repaint();
+                // Send to AI engine
+                if let Some(engine) = &self.ai_engine {
+                    let provider_name = self.ai_panel.selected_provider().to_string();
+                    let model = self.ai_panel.selected_model().to_string();
+                    
+                    if model.is_empty() {
+                        tracing::error!("No model selected");
+                        self.ai_panel.set_response("Error: No model selected".to_string());
+                        return;
+                    }
+                    
+                    let engine_clone = engine.clone();
+                    let ctx_clone = ctx.clone();
+                    
+                    // Create channel for receiving AI response
+                    let (tx, rx) = mpsc::unbounded_channel();
+                    self.ai_receiver = Some(rx);
+                    
+                    // Create chat request
+                    let request = ChatRequest::new(model)
+                        .with_user_message(context);
+                    
+                    self.runtime.spawn(async move {
+                        match engine_clone.chat_completion_with_provider(&provider_name, request).await {
+                            Ok(response) => {
+                                tracing::info!("Received AI response: {} chars", response.content.len());
+                                let _ = tx.send(AiMessage::Response(response.content));
+                                ctx_clone.request_repaint();
+                            }
+                            Err(e) => {
+                                tracing::error!("AI request failed: {}", e);
+                                let _ = tx.send(AiMessage::Error(format!("AI request failed: {}", e)));
+                                ctx_clone.request_repaint();
+                            }
+                        }
+                    });
+                } else {
+                    tracing::warn!("No AI engine available");
+                    self.ai_panel.set_response("Error: AI engine not initialized".to_string());
+                }
                 
-                // Simulate response (in real implementation, this would be async)
-                let response = format!(
-                    "AI response to: {}\n\nContext: {} blocks included",
-                    prompt,
-                    if self.ai_panel.include_context { self.ai_panel.context_blocks.to_string() } else { "0".to_string() }
-                );
-                
-                self.ai_panel.set_response(response.clone());
-                self.ai_panel.add_assistant_message(response);
                 ctx.request_repaint();
             }
         }
@@ -363,6 +626,14 @@ impl ImmateriumApp {
 enum OutputMessage {
     Output(String),
     Exit(i32),
+}
+
+enum AiMessage {
+    Response(String),
+    StreamChunk(String),
+    Error(String),
+    ModelsLoaded(Vec<String>),
+    CommandGenerated(String), // Generated shell command from natural language
 }
 
 impl eframe::App for ImmateriumApp {
@@ -398,6 +669,40 @@ impl eframe::App for ImmateriumApp {
         }
         if should_clear_receiver {
             self.output_receiver = None;
+        }
+        
+        // Poll AI receiver for AI responses
+        if let Some(rx) = &mut self.ai_receiver {
+            while let Ok(msg) = rx.try_recv() {
+                match msg {
+                    AiMessage::Response(content) => {
+                        self.ai_panel.set_response(content.clone());
+                        self.ai_panel.add_assistant_message(content);
+                    }
+                    AiMessage::StreamChunk(chunk) => {
+                        self.ai_panel.append_response(chunk);
+                    }
+                    AiMessage::Error(err) => {
+                        self.ai_panel.set_response(format!("Error: {}", err));
+                        self.ai_panel.stop_streaming();
+                        self.is_generating_command = false;
+                    }
+                    AiMessage::ModelsLoaded(models) => {
+                        self.ai_panel.set_available_models(models);
+                    }
+                    AiMessage::CommandGenerated(command) => {
+                        // Create a pending approval block instead of showing modal
+                        let block = Block::new_pending_approval(
+                            self.original_nl_input.clone(),
+                            command,
+                            self.session.working_directory.clone(),
+                        );
+                        self.block_manager.add_block(block);
+                        self.is_generating_command = false;
+                        self.original_nl_input.clear();
+                    }
+                }
+            }
         }
         
         // Top menu bar
@@ -471,14 +776,36 @@ impl eframe::App for ImmateriumApp {
                         self.ai_panel.toggle_sidebar();
                         ui.close_menu();
                     }
+                    
                     ui.separator();
-                    if ui.button("Suggest Command").clicked() {
-                        tracing::info!("AI suggest clicked");
+                    ui.label("Operation Mode:");
+                    
+                    use crate::config::OperationMode;
+                    
+                    if ui.selectable_label(
+                        self.config.ai.operation_mode == OperationMode::TerminalOnly,
+                        "🖥️ Terminal Only"
+                    ).on_hover_text("Always execute as shell commands").clicked() {
+                        self.config.ai.operation_mode = OperationMode::TerminalOnly;
                         ui.close_menu();
                     }
-                    if ui.button("Explain Last Command").clicked() {
+                    
+                    if ui.selectable_label(
+                        self.config.ai.operation_mode == OperationMode::AiPromptOnly,
+                        "🤖 AI Prompt Only"
+                    ).on_hover_text("Always convert to commands using AI").clicked() {
+                        self.config.ai.operation_mode = OperationMode::AiPromptOnly;
                         ui.close_menu();
                     }
+                    
+                    if ui.selectable_label(
+                        self.config.ai.operation_mode == OperationMode::Hybrid,
+                        "🔀 Hybrid (Auto-detect)"
+                    ).on_hover_text("Automatically detect NL vs commands").clicked() {
+                        self.config.ai.operation_mode = OperationMode::Hybrid;
+                        ui.close_menu();
+                    }
+                    
                     ui.separator();
                     
                     ui.label("Provider:");
@@ -572,6 +899,32 @@ impl eframe::App for ImmateriumApp {
                             
                             if block_response.show_context_menu {
                                 self.context_menu_block = Some(block.id);
+                            }
+                            
+                            if block_response.approve_command {
+                                // Execute the AI-suggested command
+                                let command = block.command.clone();
+                                self.block_manager.remove_block(&block.id);
+                                self.execute_shell_command(command, ctx);
+                            }
+                            
+                            if block_response.reject_command {
+                                // Remove the pending block
+                                self.block_manager.remove_block(&block.id);
+                            }
+                            
+                            if block_response.edit_command {
+                                // Put command in input for editing
+                                self.command_input = block.command.clone();
+                                self.block_manager.remove_block(&block.id);
+                            }
+                            
+                            if block_response.regenerate_command {
+                                // Regenerate command from original NL input
+                                if let Some(nl_input) = block.original_input.clone() {
+                                    self.block_manager.remove_block(&block.id);
+                                    self.convert_natural_language_to_command(nl_input, ctx);
+                                }
                             }
                             
                             ui.add_space(self.config.appearance.block_spacing);
@@ -706,6 +1059,28 @@ impl eframe::App for ImmateriumApp {
                     if ui.button("❌ Close").clicked() {
                         self.show_session_list = false;
                     }
+                });
+        }
+
+        // Generating command indicator (small corner indicator)
+        if self.is_generating_command {
+            egui::Area::new(egui::Id::new("generating_indicator"))
+                .anchor(egui::Align2::RIGHT_BOTTOM, [-10.0, -10.0])
+                .show(ctx, |ui| {
+                    egui::Frame::none()
+                        .fill(egui::Color32::from_rgba_premultiplied(40, 40, 40, 220))
+                        .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(255, 165, 0)))
+                        .inner_margin(10.0)
+                        .rounding(5.0)
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.spinner();
+                                ui.label(
+                                    egui::RichText::new("🤖 Generating command...")
+                                        .color(egui::Color32::from_rgb(255, 165, 0))
+                                );
+                            });
+                        });
                 });
         }
 

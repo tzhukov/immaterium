@@ -15,6 +15,7 @@ impl<'a> BlockWidget<'a> {
         let mut response = BlockResponse::default();
 
         let block_color = match self.block.state {
+            BlockState::PendingApproval => Color32::from_rgb(255, 165, 0), // Orange - waiting for approval
             BlockState::Running => Color32::from_rgb(100, 149, 237), // Cornflower blue
             BlockState::Completed => Color32::from_rgb(72, 209, 204), // Medium turquoise
             BlockState::Failed => Color32::from_rgb(220, 20, 60), // Crimson
@@ -43,6 +44,7 @@ impl<'a> BlockWidget<'a> {
 
                     // Status indicator
                     let status_icon = match self.block.state {
+                        BlockState::PendingApproval => "🤖",
                         BlockState::Running => "⏳",
                         BlockState::Completed => "✅",
                         BlockState::Failed => "❌",
@@ -88,6 +90,62 @@ impl<'a> BlockWidget<'a> {
                         }
                     });
                 });
+
+                // For PendingApproval blocks, show the original NL input and approval buttons
+                if self.block.state == BlockState::PendingApproval {
+                    if let Some(ref nl_input) = self.block.original_input {
+                        ui.separator();
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                RichText::new("💭")
+                                    .color(Color32::from_rgb(150, 150, 150)),
+                            );
+                            ui.label(
+                                RichText::new(nl_input)
+                                    .italics()
+                                    .color(Color32::from_rgb(180, 180, 180))
+                                    .size(self.font_size - 1.0),
+                            );
+                        });
+                    }
+                    
+                    ui.separator();
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            RichText::new("AI suggests:")
+                                .color(Color32::from_rgb(255, 165, 0))
+                                .strong(),
+                        );
+                        
+                        if ui.button(
+                            RichText::new("✅ Execute")
+                                .color(Color32::from_rgb(72, 209, 204))
+                        ).clicked() {
+                            response.approve_command = true;
+                        }
+                        
+                        if ui.button(
+                            RichText::new("✏️ Edit")
+                                .color(Color32::from_rgb(100, 149, 237))
+                        ).clicked() {
+                            response.edit_command = true;
+                        }
+                        
+                        if ui.button(
+                            RichText::new("🔄 Regenerate")
+                                .color(Color32::from_rgb(255, 215, 0))
+                        ).clicked() {
+                            response.regenerate_command = true;
+                        }
+                        
+                        if ui.button(
+                            RichText::new("❌ Cancel")
+                                .color(Color32::from_rgb(220, 20, 60))
+                        ).clicked() {
+                            response.reject_command = true;
+                        }
+                    });
+                }
 
                 // Output (if not collapsed)
                 if !self.block.is_collapsed && !self.block.output.is_empty() {
@@ -156,4 +214,8 @@ pub struct BlockResponse {
     pub selected: bool,
     pub toggle_collapsed: bool,
     pub show_context_menu: bool,
+    pub approve_command: bool,
+    pub reject_command: bool,
+    pub edit_command: bool,
+    pub regenerate_command: bool,
 }

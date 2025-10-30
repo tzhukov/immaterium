@@ -16,11 +16,13 @@ pub struct Block {
     pub metadata: BlockMetadata,
     pub is_collapsed: bool,
     pub is_selected: bool,
+    pub original_input: Option<String>, // For AI-generated commands, stores the original NL input
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum BlockState {
     Editing,
+    PendingApproval, // AI-generated command waiting for user approval
     Running,
     Completed,
     Failed,
@@ -54,6 +56,28 @@ impl Block {
             },
             is_collapsed: false,
             is_selected: false,
+            original_input: None,
+        }
+    }
+
+    pub fn new_pending_approval(nl_input: String, suggested_command: String, working_directory: PathBuf) -> Self {
+        Self {
+            id: Uuid::new_v4(),
+            timestamp: Utc::now(),
+            command: suggested_command,
+            output: String::new(),
+            exit_code: None,
+            state: BlockState::PendingApproval,
+            metadata: BlockMetadata {
+                duration: None,
+                working_directory,
+                environment: HashMap::new(),
+                started_at: None,
+                completed_at: None,
+            },
+            is_collapsed: false,
+            is_selected: false,
+            original_input: Some(nl_input),
         }
     }
 

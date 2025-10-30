@@ -66,7 +66,18 @@ impl Default for AppearanceConfig {
 pub struct AiConfig {
     pub default_provider: String,
     pub enable_suggestions: bool,
+    pub operation_mode: OperationMode,
     pub providers: HashMap<String, AiProviderConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum OperationMode {
+    #[serde(rename = "terminal_only")]
+    TerminalOnly,      // Mode 1: Only execute as shell commands
+    #[serde(rename = "ai_prompt_only")]
+    AiPromptOnly,      // Mode 2: Always treat as AI prompts
+    #[serde(rename = "hybrid")]
+    Hybrid,            // Mode 3: Auto-detect (default)
 }
 
 impl Default for AiConfig {
@@ -106,6 +117,7 @@ impl Default for AiConfig {
         Self {
             default_provider: "ollama".to_string(),
             enable_suggestions: true,
+            operation_mode: OperationMode::Hybrid,
             providers,
         }
     }

@@ -130,6 +130,7 @@ impl ContextBuilder {
 
         // Add status if not running
         match block.state {
+            BlockState::PendingApproval => block_text.push_str("[Pending Approval]\n"),
             BlockState::Completed => {
                 if let Some(code) = block.exit_code {
                     block_text.push_str(&format!("[Exit: {}]\n", code));
@@ -265,6 +266,7 @@ mod tests {
             },
             is_collapsed: false,
             is_selected: false,
+            original_input: None,
         }
     }
 

@@ -265,6 +265,14 @@ impl AiPanel {
     pub fn stop_streaming(&mut self) {
         self.is_streaming = false;
     }
+
+    pub fn selected_provider(&self) -> &str {
+        &self.selected_provider
+    }
+
+    pub fn selected_model(&self) -> &str {
+        &self.selected_model
+    }
 }
 
 #[derive(Debug, Clone)]

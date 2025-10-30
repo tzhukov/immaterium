@@ -190,6 +190,7 @@ impl SessionManager {
                 },
                 is_collapsed: row.get("is_collapsed"),
                 is_selected: false,
+                original_input: None, // Not stored in DB yet
             });
         }
 
