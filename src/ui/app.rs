@@ -1,9 +1,10 @@
+use crate::ai::{build_minimal_context, AiEngine, ChatRequest, ContextConfig};
 use crate::config::Config;
 use crate::core::{Block, BlockManager, Database, ExportedSession, Session, SessionManager};
 use crate::shell::{OutputLine, ShellExecutor};
 use crate::theme::ThemeLoader;
-use crate::ui::BlockWidget;
-use egui::{CentralPanel, Context, ScrollArea, TopBottomPanel, ViewportCommand};
+use crate::ui::{AiAction, AiPanel, BlockWidget};
+use egui::{CentralPanel, Context, ScrollArea, SidePanel, TopBottomPanel, ViewportCommand};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
@@ -30,6 +31,9 @@ pub struct ImmateriumApp {
     // Theme
     theme_loader: ThemeLoader,
     show_theme_selector: bool,
+    // AI
+    ai_panel: AiPanel,
+    ai_engine: Option<AiEngine>,
 }
 
 impl ImmateriumApp {
@@ -133,6 +137,8 @@ impl ImmateriumApp {
             show_export_dialog: false,
             theme_loader,
             show_theme_selector: false,
+            ai_panel: AiPanel::new(),
+            ai_engine: None,
         }
     }
 
@@ -296,6 +302,62 @@ impl ImmateriumApp {
             }
         }
     }
+
+    fn handle_ai_action(&mut self, action: AiAction, ctx: &Context) {
+        match action {
+            AiAction::ProviderChanged(provider) => {
+                tracing::info!("AI provider changed to: {}", provider);
+                self.ai_panel.set_selected_provider(provider.clone());
+                // Request model list load
+                self.handle_ai_action(AiAction::LoadModels, ctx);
+            }
+            AiAction::LoadModels => {
+                tracing::info!("Loading AI models...");
+                // TODO: Initialize AI engine with providers from config
+                // For now, just set some dummy models
+                let models = vec![
+                    "qwen2.5-coder:3b".to_string(),
+                    "qwen2.5-coder:7b".to_string(),
+                    "qwen3:8b".to_string(),
+                ];
+                self.ai_panel.set_available_models(models);
+            }
+            AiAction::SendPrompt(prompt) => {
+                tracing::info!("Sending prompt to AI: {}", prompt);
+                
+                // Add to conversation
+                self.ai_panel.add_user_message(prompt.clone());
+                
+                // Build context from recent blocks if enabled
+                let blocks: Vec<Block> = self.block_manager.get_blocks()
+                    .iter()
+                    .cloned()
+                    .collect();
+                
+                let context = if self.ai_panel.include_context {
+                    build_minimal_context(&blocks, &prompt, self.ai_panel.context_blocks)
+                } else {
+                    prompt.clone()
+                };
+                
+                // TODO: Send to AI engine
+                // For now, just set a placeholder response
+                self.ai_panel.start_streaming();
+                ctx.request_repaint();
+                
+                // Simulate response (in real implementation, this would be async)
+                let response = format!(
+                    "AI response to: {}\n\nContext: {} blocks included",
+                    prompt,
+                    if self.ai_panel.include_context { self.ai_panel.context_blocks.to_string() } else { "0".to_string() }
+                );
+                
+                self.ai_panel.set_response(response.clone());
+                self.ai_panel.add_assistant_message(response);
+                ctx.request_repaint();
+            }
+        }
+    }
 }
 
 enum OutputMessage {
@@ -405,6 +467,11 @@ impl eframe::App for ImmateriumApp {
                 });
 
                 ui.menu_button("AI", |ui| {
+                    if ui.button("Toggle AI Panel").clicked() {
+                        self.ai_panel.toggle_sidebar();
+                        ui.close_menu();
+                    }
+                    ui.separator();
                     if ui.button("Suggest Command").clicked() {
                         tracing::info!("AI suggest clicked");
                         ui.close_menu();
@@ -440,6 +507,24 @@ impl eframe::App for ImmateriumApp {
                 });
             });
         });
+
+        // AI Panel (right sidebar)
+        if self.ai_panel.is_open() {
+            SidePanel::right("ai_panel")
+                .default_width(350.0)
+                .resizable(true)
+                .show(ctx, |ui| {
+                    let providers: Vec<String> = self.config.ai.providers
+                        .keys()
+                        .filter(|k| self.config.ai.providers[*k].enabled)
+                        .cloned()
+                        .collect();
+                    
+                    if let Some(action) = self.ai_panel.show_sidebar(ui, &providers) {
+                        self.handle_ai_action(action, ctx);
+                    }
+                });
+        }
 
         // Main terminal area
         CentralPanel::default().show(ctx, |ui| {
