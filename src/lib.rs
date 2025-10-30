@@ -4,6 +4,7 @@ pub mod core;
 pub mod shell;
 pub mod ai;
 pub mod mcp;
+pub mod syntax;
 pub mod theme;
 pub mod utils;
 
