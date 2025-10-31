@@ -5,7 +5,7 @@ use crate::core::{Block, BlockManager, Database, ExportedSession, Session, Sessi
 use crate::shell::{OutputLine, ShellExecutor};
 use crate::theme::ThemeLoader;
 use crate::ui::{AiAction, AiPanel, BlockWidget};
-use egui::{CentralPanel, Context, ScrollArea, TopBottomPanel, ViewportCommand};
+use egui::{CentralPanel, Color32, Context, RichText, ScrollArea, TopBottomPanel, ViewportCommand};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -924,12 +924,9 @@ impl eframe::App for ImmateriumApp {
                 self.context_menu_opened_at = Some(Instant::now());
             }
             
-            ui.heading("🚀 Immaterium Terminal");
-            ui.separator();
-            
             // Blocks area (takes remaining space)
-            // Reserve space for AI panel (50px) + separator + command input (40px) + separators
-            let input_area_height = 120.0;
+            // Reserve space for AI panel + command input
+            let input_area_height = 100.0;
             let available_height = ui.available_height() - input_area_height;
             
             ScrollArea::vertical()
@@ -937,17 +934,18 @@ impl eframe::App for ImmateriumApp {
                 .auto_shrink([false; 2])
                 .stick_to_bottom(true)
                 .max_height(available_height)
+                .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
                 .show(ui, |ui| {
                     if self.block_manager.count() == 0 {
-                        ui.vertical_centered(|ui| {
-                            ui.add_space(50.0);
-                            ui.label("✨ Ready to execute commands!");
-                            ui.add_space(20.0);
-                            ui.label("Type a command below and press Enter");
-                            ui.add_space(10.0);
-                            ui.label(format!("Working directory: {}", 
-                                self.session.working_directory.display()));
-                        });
+                        ui.add_space(20.0);
+                        ui.label(
+                            RichText::new(format!("~/dev  {}", self.session.working_directory.file_name()
+                                .and_then(|n| n.to_str())
+                                .unwrap_or("")))
+                                .color(Color32::from_rgb(120, 120, 120))
+                                .size(13.0)
+                        );
+                        ui.add_space(8.0);
                     } else {
                         // Display all blocks (newest at bottom)
                         let blocks_to_display: Vec<_> = self.block_manager.get_blocks()
@@ -999,12 +997,19 @@ impl eframe::App for ImmateriumApp {
                                 }
                             }
                             
-                            ui.add_space(self.config.appearance.block_spacing);
+                            // Thin separator line between blocks
+                            ui.add_space(8.0);
+                            ui.painter().hline(
+                                ui.available_rect_before_wrap().x_range(),
+                                ui.cursor().top(),
+                                egui::Stroke::new(1.0, Color32::from_rgb(50, 50, 50))
+                            );
+                            ui.add_space(8.0);
                         }
                     }
                 });
             
-            ui.separator();
+            ui.add_space(4.0);
             
             // AI Panel (compact mode above command input)
             let providers: Vec<String> = self.config.ai.providers
@@ -1017,29 +1022,27 @@ impl eframe::App for ImmateriumApp {
                 self.handle_ai_action(action, ctx);
             }
             
-            ui.separator();
+            ui.add_space(4.0);
             
-            // Command input area styled as a block
-            let input_block_color = egui::Color32::from_rgb(72, 209, 204); // Turquoise like completed blocks
-            let input_bg_color = egui::Color32::from_rgba_premultiplied(40, 40, 40, 20);
-            
+            // Command input area - Warp style (minimal, no heavy border)
             egui::Frame::none()
-                .fill(input_bg_color)
-                .stroke(egui::Stroke::new(1.0, input_block_color))
-                .inner_margin(8.0)
+                .fill(egui::Color32::from_rgba_premultiplied(30, 30, 35, 50))
+                .stroke(egui::Stroke::NONE)
+                .inner_margin(egui::Margin {
+                    left: 12.0,
+                    right: 12.0,
+                    top: 10.0,
+                    bottom: 10.0,
+                })
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
                         ui.label(
-                            egui::RichText::new("▶")
-                                .color(input_block_color)
-                                .size(self.config.appearance.font_size)
-                        );
-                        ui.label(
-                            egui::RichText::new("$")
-                                .font(egui::FontId::monospace(self.config.appearance.font_size))
-                                .color(egui::Color32::from_rgb(200, 200, 200))
+                            egui::RichText::new("›")
+                                .color(egui::Color32::from_rgb(100, 180, 255))
+                                .size(self.config.appearance.font_size + 2.0)
                         );
                         
+                        ui.add_space(4.0);
                         let response = ui.add(
                             egui::TextEdit::singleline(&mut self.command_input)
                                 .desired_width(f32::INFINITY)
